@@ -1,0 +1,13 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /portraSettings/{uid} {
+      allow get: if request.auth != null && request.auth.uid == uid;
+      allow create, update: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly([
+          'sheetId', 'dashboardTab', 'pricesTab', 'fxTab', 'dividendsTab',
+          'txTabs', 'cryptoAccounts', 'benchmarks', 'costMethod', 'separateCash', 'motion'
+        ]);
+    }
+  }
+}

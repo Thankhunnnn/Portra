@@ -2,7 +2,7 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { User } from "firebase/auth";
-import { firebaseConfigured, getStoredToken, signInWithGoogle, signOut as doSignOut, watchAuth } from "@/lib/firebase";
+import { auth, clearSheetsToken, firebaseConfigured, getStoredToken, signInWithGoogle, signOut as doSignOut, watchAuth } from "@/lib/firebase";
 import {
   AuthError, DEFAULT_SETTINGS, LEGACY_TABS, parsePriceHistory, fetchTab, parseDashboard, parseExtendedPrices, parseTransactions, parseFxRates, parseDividendSchedule,
   parseAssetMetadata, parseCashSnapshots, type AssetMetadata,
@@ -12,6 +12,7 @@ import { computeNav, summarize, PriceLookup, positionUnits, type CashSnapshot, t
 import { addMonths, todayInBangkok } from "@/lib/reportDates";
 import { demoDashboard, demoMeta, demoPrices, demoTransactions } from "@/lib/demo";
 import { BENCHMARKS } from "@/lib/benchmarks";
+import { readSettings, writeSettings } from "@/lib/settingsSync";
 import { buildLots, type CostMethod } from "@/lib/lots";
 import type { CustomAsset } from "@/lib/customAssets";
 import type { Currency } from "@/lib/utils";
@@ -48,6 +49,8 @@ interface Ctx {
   startDemo: () => void;
   signOut: () => Promise<void>;
   loading: boolean;
+  refreshStatus: string;
+  settingsSync: "loading" | "synced" | "local";
   error: string;
   lastUpdated: string;
   session: "EXTENDED" | "REGULAR";
@@ -100,9 +103,16 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [authError, setAuthError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [refreshStatus, setRefreshStatus] = useState("");
+  const refreshActive = useRef(false);
   const [error, setError] = useState("");
   const [lastUpdated, setLastUpdated] = useState("");
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  const [syncState, setSyncState] = useState<{ uid: string; status: Ctx["settingsSync"] }>();
+  const settingsVersion = useRef(0);
+  const liveUid = mode === "live" ? user?.uid : undefined;
+  const settingsSync = liveUid ? syncState?.uid === liveUid ? syncState.status : "loading" : "local";
+  const syncLoading = settingsSync === "loading";
   const demoDefaults = mode === "demo" &&
     Object.keys(settings.txTabs).length === 1 && settings.txTabs.Portfolio === "Transactions";
   const portfolios = useMemo(() => Object.keys(demoDefaults ? LEGACY_TABS : settings.txTabs), [demoDefaults, settings.txTabs]);
@@ -131,7 +141,6 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
     setAssetStore({ key: assetKey, assets });
   }, [assetKey]);
   const loadId = useRef(0);
-  const tokenRef = useRef<string | null>(null);
 
   // hydrate preferences
   useEffect(() => {
@@ -160,19 +169,64 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
     return watchAuth((u) => {
       setUser(u);
       if (u) {
-        tokenRef.current = getStoredToken();
         setMode((m) => (m === "demo" ? m : "live"));
       }
     });
   }, []);
 
   const saveSettings = useCallback((s: Settings) => {
+    const version = ++settingsVersion.current;
     setSettings(s);
-    try { localStorage.setItem("portra.settings", JSON.stringify(s)); } catch {}
-  }, []);
+    try { localStorage.setItem(liveUid ? `portra.settings.${liveUid}` : "portra.settings", JSON.stringify(s)); } catch {}
+    if (!liveUid) return;
+    void writeSettings(liveUid, s).then(() => {
+      if (version === settingsVersion.current) setSyncState({ uid: liveUid, status: "synced" });
+    }).catch(() => {
+      if (version === settingsVersion.current) setSyncState({ uid: liveUid, status: "local" });
+    });
+  }, [liveUid]);
+
+  useEffect(() => {
+    if (!liveUid) return;
+    const uid = liveUid;
+    let active = true;
+    const version = ++settingsVersion.current;
+    let local = DEFAULT_SETTINGS;
+    try {
+      const profile = localStorage.getItem(`portra.settings.${uid}`);
+      const legacyOwner = localStorage.getItem("portra.settings.owner");
+      const data = profile ?? (!legacyOwner || legacyOwner === uid ? localStorage.getItem("portra.settings") : null);
+      if (data) local = { ...DEFAULT_SETTINGS, ...JSON.parse(data) };
+      if (!legacyOwner && data && !profile) localStorage.setItem("portra.settings.owner", uid);
+    } catch {}
+    setSettings(local);
+    setSyncState({ uid, status: "loading" });
+    const isCurrent = () => active && version === settingsVersion.current;
+    const timer = setTimeout(() => {
+      if (isCurrent()) setSyncState({ uid, status: "local" });
+    }, 6500);
+    void readSettings(uid).then(async (remote) => {
+      if (!isCurrent()) return;
+      if (remote) {
+        // Refresh credentials belong to the local browser and its connected sheet.
+        const sameSheet = remote.sheetId === local.sheetId;
+        const merged = { ...local, ...remote, scriptUrl: sameSheet ? local.scriptUrl : "", scriptKey: sameSheet ? local.scriptKey : "" };
+        setSettings(merged);
+        try { localStorage.setItem(`portra.settings.${uid}`, JSON.stringify(merged)); } catch {}
+      } else if (local.sheetId) {
+        await writeSettings(uid, local);
+      }
+      if (isCurrent()) setSyncState({ uid, status: "synced" });
+    }).catch(() => {
+      if (isCurrent()) setSyncState({ uid, status: "local" });
+    }).finally(() => clearTimeout(timer));
+    return () => { active = false; clearTimeout(timer); };
+  }, [liveUid]);
 
   const load = useCallback(async () => {
     const id = ++loadId.current;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000);
     setLoading(true);
     setError("");
     try {
@@ -201,20 +255,20 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
       }
       if (mode !== "live") return;
       if (!settings.sheetId) throw new Error("Set your Google Sheet ID in Settings, then refresh.");
-      let token = tokenRef.current ?? getStoredToken();
-      if (!token) token = await signInWithGoogle();
-      tokenRef.current = token;
+      const token = getStoredToken();
+      if (!token) throw new AuthError("Google Sheets access needs to be renewed on this device.");
       const tabs = Object.entries(settings.txTabs);
       const symbolFor = (t: Transaction) =>
         t.account && settings.cryptoAccounts.includes(t.account) && !t.ticker.includes("-")
           ? `${t.ticker}-USD`
           : t.ticker;
-      const optionalTab = (tab: string) => tab ? fetchTab(token, settings.sheetId, tab).catch((error) => {
-        if (error instanceof AuthError) throw error;
+      const readTab = (tab: string) => fetchTab(token, settings.sheetId, tab, controller.signal);
+      const optionalTab = (tab: string) => tab ? readTab(tab).catch((error) => {
+        if (error instanceof AuthError || controller.signal.aborted) throw error;
         return [];
       }) : Promise.resolve([]);
       const [dashRows, priceRows, liveQuoteRows, fxData, dividendData, historyRows, metadataRows, balanceRows, ...txRows] = await Promise.all([
-        fetchTab(token, settings.sheetId, settings.dashboardTab),
+        readTab(settings.dashboardTab),
         optionalTab(settings.pricesTab).then((rows) => rows.length || settings.pricesTab !== "Portra_Prices" ? rows : optionalTab("Extended_Prices")),
         optionalTab("Live_Quotes"),
         optionalTab(settings.fxTab),
@@ -222,7 +276,7 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
         optionalTab("Price_History"),
         optionalTab("Asset_Metadata"),
         optionalTab("Cash_Balances"),
-        ...tabs.map(([, tab]) => fetchTab(token, settings.sheetId, tab)),
+        ...tabs.map(([, tab]) => readTab(tab)),
       ]);
       const tx = tabs.flatMap(([name], i) => parseTransactions(txRows[i], name));
       const parsedDashboard = parseDashboard(dashRows, settings.txTabs);
@@ -254,7 +308,7 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
         const missing = symbols.filter((symbol) => !Object.keys(history[symbol] ?? {}).length);
         const chunks = Array.from({ length: Math.ceil(missing.length / 40) }, (_, i) => missing.slice(i * 40, (i + 1) * 40));
         const results = await Promise.all(chunks.map(async (chunk) => {
-          const res = await fetch(`/api/history?symbols=${encodeURIComponent(chunk.join(","))}&from=${from}`);
+          const res = await fetch(`/api/history?symbols=${encodeURIComponent(chunk.join(","))}&from=${from}`, { signal: controller.signal });
           return res.ok ? await res.json() as PriceMap : {};
         }));
         Object.assign(history, ...results);
@@ -278,15 +332,17 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
     } catch (e) {
       if (id !== loadId.current) return;
       if (e instanceof AuthError) {
-        tokenRef.current = null;
-        setError("Google session expired or sheet not shared with you. Sign in again.");
-      } else setError(e instanceof Error ? e.message : String(e));
+        clearSheetsToken();
+        setError("Google Sheets access expired or this account cannot open the sheet. Tap Refresh to reconnect.");
+      } else setError(controller.signal.aborted ? "Loading your sheet timed out. Please try Refresh again." : e instanceof Error ? e.message : String(e));
     } finally {
+      clearTimeout(timeout);
       if (id === loadId.current) setLoading(false);
     }
   }, [mode, settings, portfolios]);
 
   useEffect(() => {
+    if (mode === "live" && (!liveUid || syncLoading)) return;
     if (mode === "live") {
       setFxRows([]);
       setDividendSchedule([]);
@@ -300,16 +356,29 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
     }
     if (mode !== "none") void load();
     return () => { loadId.current++; };
-  }, [mode, load]);
+  }, [mode, load, liveUid, syncLoading]);
 
   const refresh = useCallback(async () => {
-    if (mode !== "live" || !settings.scriptUrl) { await load(); return; }
-    const token = getStoredToken();
-    if (!token || !settings.scriptKey) {
-      setError(token ? "Set the Apps Script refresh key in Settings." : "Sign in again to refresh prices.");
-      return;
+    if (refreshActive.current) return;
+    if (mode !== "live") { await load(); return; }
+    let token = getStoredToken();
+    if (!token) {
+      refreshActive.current = true;
+      try {
+        token = await signInWithGoogle();
+      } catch (error) {
+        setError(error instanceof Error ? error.message : "Could not reconnect Google Sheets.");
+        return;
+      } finally {
+        refreshActive.current = false;
+      }
+      if (auth().currentUser?.uid !== liveUid) return;
     }
-    setLoading(true);
+    if (!settings.scriptUrl || !settings.scriptKey) { await load(); return; }
+    refreshActive.current = true;
+    const request = new AbortController();
+    const sendTimeout = setTimeout(() => request.abort(), 12000);
+    setRefreshStatus("Sending price refresh…");
     setError("");
     try {
       const endpoint = new URL(settings.scriptUrl);
@@ -317,24 +386,45 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
         throw new Error("Enter the deployed Google Apps Script web app URL.");
       }
       const id = crypto.randomUUID();
-      await fetch(endpoint, { method: "POST", mode: "no-cors", body: new URLSearchParams({ id, key: settings.scriptKey }) });
-      for (let i = 0; i < 50; i++) {
-        await new Promise((resolve) => setTimeout(resolve, 3000));
-        const rows = await fetchTab(token, settings.sheetId, "Price_Refresh");
-        const receipt = rows.slice(1).find(([request]) => request === id);
-        if (receipt) {
+      await fetch(endpoint, { method: "POST", mode: "no-cors", body: new URLSearchParams({ id, key: settings.scriptKey }), signal: request.signal });
+      clearTimeout(sendTimeout);
+      setRefreshStatus("Waiting for prices from Google Sheets…");
+      const status = new AbortController();
+      const deadline = Date.now() + 105000;
+      const timer = setTimeout(() => status.abort(), 105000);
+      try {
+        while (Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+          if (Date.now() >= deadline) break;
+          const rows = await fetchTab(token, settings.sheetId, "Price_Refresh", status.signal);
+          const receipt = rows.slice(1).find(([requestId]) => requestId === id);
+          if (!receipt) continue;
           const result = receipt[1];
+          setRefreshStatus("Loading updated prices…");
           await load();
           if (result !== "OK") setError(String(result || "Price refresh failed."));
           return;
         }
+      } catch (error) {
+        if (!status.signal.aborted) throw error;
+      } finally {
+        clearTimeout(timer);
       }
-      throw new Error("No refresh confirmation yet. The import may still be running.");
+      await load();
+      throw new Error("Google Sheets did not confirm this refresh in time. Showing the prices currently saved in your sheet.");
     } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
-      setLoading(false);
+      if (error instanceof AuthError) {
+        clearSheetsToken();
+        setError("Google Sheets access expired. Tap Refresh to reconnect.");
+      } else {
+        setError(request.signal.aborted ? "Could not reach the price refresh service in time. Try again." : error instanceof Error ? error.message : String(error));
+      }
+    } finally {
+      clearTimeout(sendTimeout);
+      refreshActive.current = false;
+      setRefreshStatus("");
     }
-  }, [mode, settings, load]);
+  }, [mode, settings, load, liveUid]);
 
   const signIn = useCallback(async () => {
     setAuthError("");
@@ -343,7 +433,7 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     try {
-      tokenRef.current = await signInWithGoogle();
+      await signInWithGoogle();
       localStorage.removeItem("portra.demo");
       setMode("live");
     } catch (e) {
@@ -354,7 +444,6 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
   const signOut = useCallback(async () => {
     await doSignOut();
     localStorage.removeItem("portra.demo");
-    tokenRef.current = null;
     setMode("none"); setAllTxns([]); setQuotesArr([]); setPrices({});
   }, []);
 
@@ -478,7 +567,7 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
   const session: Ctx["session"] = quotesArr.some((q) => EXT_RE.test(q.session)) ? "EXTENDED" : "REGULAR";
 
   const value: Ctx = {
-    mode, user, authError, signIn, startDemo, signOut, loading, error, lastUpdated, session, refresh,
+    mode, user, authError, signIn, startDemo, signOut, loading: loading || Boolean(refreshStatus) || settingsSync === "loading", refreshStatus, settingsSync, error, lastUpdated, session, refresh,
     settings, saveSettings, portfolios, account, setAccount, currency, setCurrency, usdThb, cv, fxAt, fxSource, engineOptions, dividendSchedule, customAssets, saveCustomAssets,
     txns, allTxns, holdings, nav, summary, dashboard, quotes, prices, cashUsd, netWorthUsd, dayChange, accountValues,
   };

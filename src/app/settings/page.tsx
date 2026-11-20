@@ -19,7 +19,7 @@ function portfolioRows(settings: Settings) {
 }
 
 export default function SettingsPage() {
-  const { settings, saveSettings, currency, setCurrency, fxSource, mode } = usePortfolio();
+  const { settings, saveSettings, settingsSync, currency, setCurrency, fxSource, mode } = usePortfolio();
   const [s, setS] = useState<Settings>(settings);
   const [saved, setSaved] = useState(false);
   const [rows, setRows] = useState(() => portfolioRows(settings));
@@ -68,6 +68,7 @@ export default function SettingsPage() {
   return (
     <div className="max-w-5xl space-y-5">
       <h1 className="text-xl font-normal">Settings</h1>
+      {mode === "live" && <p role="status" className="text-xs text-sub">{settingsSync === "synced" ? "Sheet settings sync with your Google account. Refresh credentials stay in this browser." : settingsSync === "loading" ? "Checking for saved sheet settings…" : "Sheet settings are saved on this device. Account sync is unavailable right now."}</p>}
       <section className="rounded-2xl border border-line bg-card p-4">
         <h2 className="font-semibold">Account settings</h2>
         <div className="mt-3 grid gap-3 sm:grid-cols-3">

@@ -14,7 +14,7 @@ const config = {
 
 export const firebaseConfigured = Boolean(config.apiKey && config.projectId);
 
-function app() {
+export function app() {
   return getApps().length ? getApp() : initializeApp(config);
 }
 
@@ -50,8 +50,12 @@ export async function signInWithGoogle(): Promise<string> {
 }
 
 export async function signOut() {
-  sessionStorage.removeItem(TOKEN_KEY);
+  clearSheetsToken();
   if (firebaseConfigured) await fbSignOut(auth());
+}
+
+export function clearSheetsToken() {
+  sessionStorage.removeItem(TOKEN_KEY);
 }
 
 export function watchAuth(cb: (u: User | null) => void) {

@@ -33,11 +33,11 @@ export function TopBar() {
     </DropdownMenu>
   );
   return (
-    <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-2 border-b border-line/70 bg-header/90 px-3 backdrop-blur-xl sm:px-5 lg:px-8">
+    <header className="portra-top-bar sticky top-0 z-30 flex items-center justify-between gap-2 border-b border-line/70 bg-header/90 px-3 backdrop-blur-xl sm:px-5 lg:px-8">
       <div className="flex min-w-0 items-center gap-2"><span className="text-sm font-semibold md:hidden">Portra</span><span className="truncate text-sm text-sub">{label}</span></div>
       <div className="flex items-center gap-1">
         <Button aria-label="Add transaction" onClick={openManage} className="rounded-full bg-indigo-500 text-white hover:bg-indigo-400"><Plus size={17} /><span className="hidden sm:inline">Manage Sheet</span></Button>
-        <Button variant="ghost" size="icon" aria-label="Refresh prices" onClick={() => void refresh()}>
+        <Button variant="ghost" size="icon" aria-label="Refresh prices" onClick={() => void refresh()} disabled={loading}>
           <RefreshCw size={18} className={cn(loading && "animate-spin")} />
         </Button>
         <Button variant="ghost" size="icon" aria-label="Help" asChild><Link href="/menu"><HelpCircle size={19} /></Link></Button>
@@ -49,7 +49,7 @@ export function TopBar() {
 
 export function ControlsBar() {
   const { hideHomeValues } = useUi();
-  const { account, setAccount, currency, setCurrency, lastUpdated, session, refresh, loading, usdThb, fxSource, mode, portfolios } = usePortfolio();
+  const { account, setAccount, currency, setCurrency, lastUpdated, session, refresh, loading, refreshStatus, usdThb, fxSource, mode, portfolios } = usePortfolio();
   return (
     <div className="portra-control-strip flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line/60 px-3 py-3 sm:px-5 lg:px-8">
       <Segmented<AccountFilter> className="max-w-full flex-wrap" label="Account filter" value={account} onChange={setAccount} options={["All", ...portfolios]} />
@@ -77,8 +77,9 @@ export function ControlsBar() {
           {session}
         </span>
         <Button variant="secondary" size="sm" onClick={() => void refresh()} disabled={loading}>
-          <RefreshCw size={13} className={cn(loading && "animate-spin")} />Refresh
+          <RefreshCw size={13} className={cn(loading && "animate-spin")} />{refreshStatus ? "Refreshing…" : "Refresh"}
         </Button>
+        {refreshStatus && <span role="status">{refreshStatus}</span>}
       </div>
     </div>
   );

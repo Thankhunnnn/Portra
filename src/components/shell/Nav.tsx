@@ -66,7 +66,7 @@ export function BottomBar() {
   const path = usePathname();
   const items = [...NAV_MAIN.slice(0, 4), NAV_MANAGE[0], { href: "/menu", label: "Menu", icon: "menu" }];
   return (
-    <nav className="pb-safe fixed inset-x-0 bottom-0 z-40 flex h-14 items-center justify-around border-t border-line bg-header md:hidden">
+    <nav className="portra-bottom-bar fixed inset-x-0 bottom-0 z-40 flex items-center justify-around border-t border-line bg-header md:hidden">
       {items.map((i) => {
         const Icon = ICONS[i.icon];
         const active = path === i.href || (i.href === "/portfolio" && path === "/");

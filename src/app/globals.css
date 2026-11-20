@@ -10,7 +10,18 @@ body { font-family: Inter, system-ui, "Segoe UI", sans-serif; -webkit-font-smoot
 .recharts-surface:focus { outline: none; }
 ::-webkit-scrollbar { height: 8px; width: 8px; }
 ::-webkit-scrollbar-thumb { background: #313845; border-radius: 8px; }
-.pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+.portra-top-bar {
+  min-height: calc(4rem + env(safe-area-inset-top, 0px));
+  padding-top: env(safe-area-inset-top, 0px);
+}
+.portra-bottom-bar {
+  min-height: calc(3.5rem + env(safe-area-inset-bottom, 0px));
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.portra-content { padding-bottom: calc(5rem + env(safe-area-inset-bottom, 0px)); }
+@media (min-width: 768px) {
+  .portra-content { padding-bottom: 2rem; }
+}
 
 .page-enter {
   animation: portra-page-enter 180ms ease-out both;

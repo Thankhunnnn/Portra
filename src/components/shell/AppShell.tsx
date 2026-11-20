@@ -23,7 +23,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <UiContext.Provider value={{ hideHomeValues: home && hideValues, toggleHomeValues: () => setHideValues((hide) => !hide), openManage: () => setManage(true), openTicker: setTicker }}>
       <div className="portra-workspace flex min-h-dvh">
         <Sidebar />
-        <div className="min-w-0 flex-1 pb-20 md:pb-8">
+        <div className="portra-content min-w-0 flex-1">
           <TopBar />
           <ControlsBar />
           {error && (

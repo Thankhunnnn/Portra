@@ -1,6 +1,6 @@
 const scope = new URL(self.registration.scope);
 const key = "portra:" + scope.pathname + ":";
-const CACHE = key + "v2";
+const CACHE = key + "v3";
 const shellUrl = (path) => new URL(path, scope).href;
 const SHELL = ["", "icon.svg", "manifest.webmanifest"].map(shellUrl);
 

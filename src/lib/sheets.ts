@@ -77,11 +77,11 @@ export const DEFAULT_SETTINGS: Settings = {
 
 export type Row = (string | number | boolean | null | undefined)[];
 
-export async function fetchTab(token: string, sheetId: string, tab: string): Promise<Row[]> {
+export async function fetchTab(token: string, sheetId: string, tab: string, signal?: AbortSignal): Promise<Row[]> {
   const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}/values/${encodeURIComponent(
     `'${tab.replaceAll("'", "''")}'`
   )}?valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=SERIAL_NUMBER`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, signal });
   if (res.status === 401 || res.status === 403) throw new AuthError(`Sheets access denied (${res.status})`);
   if (!res.ok) throw new Error(`Could not read tab "${tab}" (${res.status})`);
   const json = await res.json();
