@@ -8,6 +8,7 @@ const PORTRA_STOCK = /^[A-Z0-9][A-Z0-9.-]{0,14}$/;
 function onOpen() {
   SpreadsheetApp.getUi().createMenu("Portra Prices")
     .addItem("Update closing prices", "portraUpdateDaily")
+    .addItem("Backfill from market providers", "portraBackfillPrices")
     .addItem("Enable daily updates", "portraInstallDaily")
     .addToUi();
 }
@@ -23,6 +24,74 @@ function portraInstallDaily() {
 }
 
 function portraUpdateDaily() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(1000)) return "Another refresh is running";
+  try {
+    const savedId = PropertiesService.getScriptProperties().getProperty("PORTRA_SPREADSHEET_ID");
+    const book = SpreadsheetApp.getActiveSpreadsheet() || (savedId && SpreadsheetApp.openById(savedId));
+    if (!book) throw new Error("Open the bound Portra spreadsheet first.");
+    const zone = book.getSpreadsheetTimeZone();
+    const yesterday = Utilities.formatDate(new Date(Date.now() - PORTRA_DAY), "Asia/Bangkok", "yyyy-MM-dd");
+    const history = book.getSheetByName("Price_History") || book.insertSheet("Price_History");
+    history.getRange(1, 1, 1, PORTRA_HEADER.length).setValues([PORTRA_HEADER]);
+    const count = history.getLastRow() - 1;
+    const saved = count ? history.getRange(2, 1, count, 2).getValues() : [];
+    const dayOf = (value) => value instanceof Date ? Utilities.formatDate(value, zone, "yyyy-MM-dd") : String(value);
+    const keys = new Set(saved.map(([date, ticker]) => ticker + "|" + dayOf(date)));
+    const stockDays = new Set(saved.filter(([, ticker]) => PORTRA_STOCK.test(ticker) && !ticker.endsWith("-USD"))
+      .map(([date]) => dayOf(date)));
+    const candidates = [];
+    for (const name of ["Portra_Prices", "Benchmark_Quotes"]) {
+      const tab = book.getSheetByName(name);
+      if (!tab || tab.getLastRow() < 2) continue;
+      for (const [ticker, latest, previous, currency, timestamp, provider, session] of tab.getRange(2, 1, tab.getLastRow() - 1, 7).getValues()) {
+        if (!ticker || ticker === "CASH" || provider !== "Google Finance" || session !== "REGULAR / DELAYED" ||
+          currency !== "USD" || !(timestamp instanceof Date)) continue;
+        const date = dayOf(timestamp);
+        if (date > yesterday || Date.parse(yesterday) - Date.parse(date) > 7 * PORTRA_DAY) continue;
+        const hour = Utilities.formatDate(timestamp, zone, "HH:mm");
+        // Cash indices may publish their final calculation after the closing bell.
+        const close = hour === "16:00" || (name === "Benchmark_Quotes" && hour >= "16:00" && hour < "18:00");
+        if (close && typeof latest === "number" && latest > 0) {
+          candidates.push([date, ticker, latest, "USD", "Google Finance · regular session close"]);
+          if (PORTRA_STOCK.test(ticker)) stockDays.add(date);
+        }
+        if (typeof previous === "number" && previous > 0) {
+          let prior = Date.parse(date) - PORTRA_DAY;
+          while ([0, 6].includes(new Date(prior).getUTCDay())) prior -= PORTRA_DAY;
+          candidates.push([portraDay(prior), ticker, previous, "USD", "Google Finance · previous close"]);
+        }
+      }
+    }
+    const rows = [];
+    let confirmed = 0;
+    for (const row of candidates) {
+      const [date, ticker, , , source] = row;
+      if (source.endsWith("previous close") && !stockDays.has(date)) continue;
+      const key = ticker + "|" + date;
+      confirmed++;
+      if (keys.has(key)) continue;
+      keys.add(key);
+      rows.push(row);
+    }
+    if (!confirmed) throw new Error("No recent regular-session closing quotes were available in Portra_Prices or Benchmark_Quotes.");
+    if (rows.length) {
+      const first = history.getLastRow() + 1;
+      const required = first + rows.length - 1;
+      if (history.getMaxRows() < required) history.insertRowsAfter(history.getMaxRows(), required - history.getMaxRows());
+      history.getRange(first, 1, rows.length, 1).setNumberFormat("@");
+      history.getRange(first, 1, rows.length, PORTRA_HEADER.length).setValues(rows);
+      SpreadsheetApp.flush();
+    }
+    const result = `Checked ${confirmed} closing quotes and added ${rows.length} rows.`;
+    console.log(result);
+    return result;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function portraBackfillPrices() {
   const docLock = LockService.getScriptLock();
   if (!docLock.tryLock(1000)) return "Another refresh is running";
   try {
