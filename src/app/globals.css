@@ -1,0 +1,43 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: dark; }
+html, body { background: #090a0f; color: #f3f4f6; }
+body { font-family: Inter, system-ui, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
+.num { font-family: "JetBrains Mono", ui-monospace, Consolas, monospace; font-variant-numeric: tabular-nums; }
+.recharts-wrapper { outline: none; }
+.recharts-surface:focus { outline: none; }
+::-webkit-scrollbar { height: 8px; width: 8px; }
+::-webkit-scrollbar-thumb { background: #313845; border-radius: 8px; }
+.pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+
+.page-enter {
+  animation: portra-page-enter 180ms ease-out both;
+}
+@keyframes portra-page-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.portra-workspace {
+  background: radial-gradient(ellipse at 24% -12rem, #252049 0%, #10111a 31rem, #090a0f 55rem);
+}
+.bg-card.rounded-2xl, .rounded-2xl.bg-card {
+  background-image: linear-gradient(155deg, #171a28 0%, #11131c 57%, #10121a 100%);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / .075), 0 14px 32px -22px #000;
+}
+.portra-hero {
+  background-image: radial-gradient(ellipse at 100% 0%, #3a3064 0%, transparent 60%),
+    linear-gradient(160deg, #1b2035, #11131c 70%);
+}
+.portra-control-strip { background: rgb(12 14 22 / .67); }
+::selection { background: #5149a0; color: white; }
+
+.donut-label-enter {
+  animation: donut-label-enter 180ms ease-out both;
+}
+@keyframes donut-label-enter {
+  from { opacity: .22; }
+  to { opacity: 1; }
+}
