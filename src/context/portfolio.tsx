@@ -213,9 +213,10 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
         if (error instanceof AuthError) throw error;
         return [];
       }) : Promise.resolve([]);
-      const [dashRows, priceRows, fxData, dividendData, historyRows, metadataRows, balanceRows, ...txRows] = await Promise.all([
+      const [dashRows, priceRows, liveQuoteRows, fxData, dividendData, historyRows, metadataRows, balanceRows, ...txRows] = await Promise.all([
         fetchTab(token, settings.sheetId, settings.dashboardTab),
         optionalTab(settings.pricesTab).then((rows) => rows.length || settings.pricesTab !== "Portra_Prices" ? rows : optionalTab("Extended_Prices")),
+        optionalTab("Live_Quotes"),
         optionalTab(settings.fxTab),
         optionalTab(settings.dividendsTab),
         optionalTab("Price_History"),
@@ -230,7 +231,15 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
       parsedDashboard.netWorth = undefined;
       parsedDashboard.sectors = [];
       parsedDashboard.themes = [];
-      const q = parseExtendedPrices(priceRows).map((quote) => ({ ...quote, source: quote.source || settings.pricesTab }));
+      const baseQuotes = parseExtendedPrices(priceRows).map((quote) => ({ ...quote, source: quote.source || settings.pricesTab }));
+      const refreshedQuotes = parseExtendedPrices(liveQuoteRows).filter((quote) => quote.latest > 0);
+      const quoteMap = new Map(baseQuotes.map((quote) => [quote.ticker, quote]));
+      for (const quote of refreshedQuotes) {
+        const baseDate = quoteMap.get(quote.ticker)?.updated.slice(0, 10) ?? "";
+        if (/^\d{4}-\d{2}-\d{2}$/.test(baseDate) && quote.updated.slice(0, 10) < baseDate) continue;
+        quoteMap.set(quote.ticker, { ...quote, source: quote.source || "Live_Quotes" });
+      }
+      const q = [...quoteMap.values()];
       const nextFx = parseFxRates(fxData);
       const nextDividends = parseDividendSchedule(dividendData);
       const nextMetadata = parseAssetMetadata(metadataRows);
@@ -265,7 +274,7 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
       if (tx.length && process.env.NEXT_PUBLIC_STATIC_PAGES === "1" && !Object.keys(history).length) {
         setError("Price history is empty. Run the Portra price import from your Google Sheet.");
       }
-      setLastUpdated(q.map((x) => x.updated).filter(Boolean).at(-1) || nowIct());
+      setLastUpdated(q.map((x) => x.updated).filter(Boolean).sort().at(-1) || nowIct());
     } catch (e) {
       if (id !== loadId.current) return;
       if (e instanceof AuthError) {
@@ -309,11 +318,12 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
       }
       const id = crypto.randomUUID();
       await fetch(endpoint, { method: "POST", mode: "no-cors", body: new URLSearchParams({ id, key: settings.scriptKey }) });
-      for (let i = 0; i < 20; i++) {
+      for (let i = 0; i < 50; i++) {
         await new Promise((resolve) => setTimeout(resolve, 3000));
         const rows = await fetchTab(token, settings.sheetId, "Price_Refresh");
-        if (rows[1]?.[0] === id) {
-          const result = rows[1][1];
+        const receipt = rows.slice(1).find(([request]) => request === id);
+        if (receipt) {
+          const result = receipt[1];
           await load();
           if (result !== "OK") setError(String(result || "Price refresh failed."));
           return;
@@ -357,9 +367,10 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
   }, [marketPrices, fxRows]);
   const currentRate = rateRecords.filter((row) => row.date <= today).at(-1);
   const sheetRate = dashboard.usdThb && dashboard.usdThb > 1 ? dashboard.usdThb : undefined;
+  const liveRate = quotesArr.find((quote) => quote.ticker === "THB=X" && quote.currency === "THB" && quote.latest > 1 && quote.updated.startsWith(today));
   const fromSheet = currentRate?.date !== today && sheetRate !== undefined;
-  const usdThb = fromSheet ? sheetRate : currentRate?.rate ?? sheetRate ?? 35;
-  const fxSource = currentRate && !fromSheet ? `${currentRate.source} · ${currentRate.date}` : sheetRate ? (mode === "demo" ? "Demo rate" : "Dashboard · date unavailable") : "Fallback rate";
+  const usdThb = liveRate?.latest ?? (fromSheet ? sheetRate : currentRate?.rate ?? sheetRate ?? 35);
+  const fxSource = liveRate ? `${liveRate.source} · ${liveRate.updated}` : currentRate && !fromSheet ? `${currentRate.source} · ${currentRate.date}` : sheetRate ? (mode === "demo" ? "Demo rate" : "Dashboard · date unavailable") : "Fallback rate";
   const fxLookup = useMemo(() => new PriceLookup({ rate: Object.fromEntries(rateRecords.map((row) => [row.date, row.rate])) }), [rateRecords]);
   const fxAt = useCallback((date: string) => date >= today ? usdThb : fxLookup.get("rate", date) ?? sheetRate ?? 35, [fxLookup, sheetRate, today, usdThb]);
   const cv = useCallback((usd: number) => (currency === "THB" ? usd * usdThb : usd), [currency, usdThb]);
@@ -378,7 +389,7 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
     asset.transactions.filter((txn) => txn.account && portfolios.includes(txn.account)))], [sheetTransactions, customAssets, portfolios]);
   const quotes = useMemo(() => Object.fromEntries(quotesArr.filter((q) => ["USD", "THB"].includes(q.currency ?? "USD")).map((q) => {
     const rate = q.currency === "THB" ? (q.updated ? fxAt(q.updated.slice(0, 10)) : usdThb) : 1;
-    return [q.ticker, { ...q, latest: q.latest / rate, regularClose: q.regularClose / rate }];
+    return [q.ticker, { ...q, latest: q.latest / rate, regularClose: q.regularClose / rate, previousClose: q.previousClose ? q.previousClose / rate : undefined }];
   })), [quotesArr, fxAt, usdThb]);
   const txns = useMemo(() => (account === "All" ? allTxns : allTxns.filter((t) => t.account === account)), [allTxns, account]);
   const nav = useMemo(() => computeNav(txns, prices, engineOptions), [txns, prices, engineOptions]);
@@ -410,13 +421,13 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
     const rows = [...grouped.entries()].map(([ticker, ps]) => {
       const shares = ps.reduce((s, p) => s + p.shares, 0);
       const cost = ps.reduce((s, p) => s + p.shares * p.avgCost, 0);
-      const q = quotes[ticker];
+      const q = quotes[ticker] ?? quotes[`${ticker}-USD`];
       const h = lastOf(ticker);
       const native = nativeThbPrices[ticker];
       const recentNative = native?.[Object.keys(native).sort().at(-1)!];
       const last = q?.latest || ps[0].sheetPrice || (recentNative ? recentNative / usdThb : h.p) || (shares ? cost / shares : 0);
       const ext = q && EXT_RE.test(q.session);
-      const prev = (ext ? q?.regularClose : undefined) || h.prev || q?.regularClose || last;
+      const prev = (ext ? q?.regularClose : q?.previousClose) || h.prev || q?.regularClose || last;
       const value = shares * last;
       const metadata = assetMetadata[ticker];
       const meta = mode === "demo" ? demoMeta(ticker) : undefined;

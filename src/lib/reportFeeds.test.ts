@@ -5,6 +5,14 @@ import { returnForWindow } from "./performance";
 import { parseDashboard, parseDividendSchedule, parseExtendedPrices, parseFxRates, parseTransactions } from "./sheets";
 
 describe("Portra sheet feeds", () => {
+  it("keeps the extended quote, regular session price and previous close distinct", () => {
+    const [quote] = parseExtendedPrices([
+      ["Ticker", "Latest Price", "Regular Close", "Currency", "Last Updated", "Source", "Session", "Previous Close"],
+      ["VOO", 105, 103, "USD", "2026-11-20 05:30:00 ICT", "Yahoo Finance", "AFTER-HOURS", 100],
+    ]);
+    expect(quote).toMatchObject({ latest: 105, regularClose: 103, previousClose: 100, session: "AFTER-HOURS" });
+    expect(quote.diffPct).toBeCloseTo(0.05);
+  });
   it("reads serial dates and preserves quote provenance", () => {
     const quotes = parseExtendedPrices([
       ["Ticker", "Latest Price", "Regular Close", "Currency", "Last Updated", "Source", "Session"],

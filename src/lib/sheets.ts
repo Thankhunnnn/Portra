@@ -18,6 +18,7 @@ export interface Quote {
   ticker: string;
   latest: number; // USD
   regularClose: number;
+  previousClose?: number;
   diffPct: number; // fraction
   session: string; // e.g. "Pre-market", "Regular", "After-hours"
   updated: string;
@@ -201,6 +202,7 @@ export function parseExtendedPrices(rows: Row[]): Quote[] {
     ticker: findCol(h, "Ticker"),
     latest: findCol(h, "Latest Price"),
     close: findCol(h, "Regular Close"),
+    previous: findCol(h, "Previous Close"),
     diff: findCol(h, "Diff"),
     session: findCol(h, "Session", "Status"),
     updated: findCol(h, "Last Updated"),
@@ -213,6 +215,7 @@ export function parseExtendedPrices(rows: Row[]): Quote[] {
     .map((r) => {
       const latest = num(r[c.latest]);
       const close = num(r[c.close]);
+      const previous = num(r[c.previous]);
       let diff = num(r[c.diff]);
       // Sheets may store 1.25 meaning 1.25 % (when not formatted as percent)
       if (!isNaN(diff) && Math.abs(diff) > 0.5 && !isNaN(latest) && !isNaN(close) && close) diff = latest / close - 1;
@@ -224,7 +227,8 @@ export function parseExtendedPrices(rows: Row[]): Quote[] {
         ticker: String(r[c.ticker]).trim().toUpperCase(),
         latest,
         regularClose: close,
-        diffPct: isNaN(diff) ? (close ? latest / close - 1 : 0) : diff,
+        previousClose: previous > 0 ? previous : undefined,
+        diffPct: isNaN(diff) ? (previous > 0 ? latest / previous - 1 : close ? latest / close - 1 : 0) : diff,
         session: String(r[c.session] ?? ""),
         updated,
         currency: String(r[c.currency] || "USD").toUpperCase(),

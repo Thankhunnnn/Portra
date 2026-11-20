@@ -141,7 +141,7 @@ function BenchmarkChanges() {
 
 export function AccountCards() {
   const { hideHomeValues } = useUi();
-  const { accountValues, prices, cv, currency, portfolios, account, setAccount, settings, saveSettings } = usePortfolio();
+  const { accountValues, prices, quotes, cv, currency, portfolios, account, setAccount, settings, saveSettings } = usePortfolio();
   const enabled = settings.benchmarks;
   const [editing, setEditing] = useState(false);
   function toggle(ticker: string) {
@@ -182,8 +182,9 @@ export function AccountCards() {
         {BENCHMARKS.filter(({ ticker }) => enabled.includes(ticker)).map(({ ticker, name }) => {
           const data = prices[ticker] ?? {};
           const dates = Object.keys(data).sort();
-          const current = data[dates.at(-1)!];
-          const prev = data[dates.at(-2)!];
+          const quote = quotes[ticker];
+          const current = quote?.latest || data[dates.at(-1)!];
+          const prev = quote?.previousClose || data[dates.at(-2)!];
           const change = current - prev;
           return <div key={ticker} className="rounded-xl border border-line bg-cardwarm p-4">
             <div className="text-sm text-sub">{name}</div>
