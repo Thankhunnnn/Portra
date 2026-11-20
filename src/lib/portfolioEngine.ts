@@ -10,7 +10,20 @@ export type Action =
   | "WITHDRAW"
   | "DIVIDEND"
   | "FEE"
+  | "TRANSFER_IN"
+  | "TRANSFER_OUT"
+  | "TAX"
+  | "INTEREST_INCOME"
+  | "INTEREST_EXPENSE"
+  | "STOCK_DIVIDEND"
   | "OTHER";
+
+export type CashSnapshot = {
+  date: string;
+  account: string;
+  currency: "USD" | "THB";
+  balance: number;
+};
 
 export interface Transaction {
   date: string; // YYYY-MM-DD
@@ -47,6 +60,7 @@ export interface EngineOptions {
   benchmarkTicker?: string; // key in PriceMap, default "^GSPC"
   /** If cash would go negative, assume an implicit deposit funds the gap (for sheets lacking deposit rows). */
   autoFund?: boolean;
+  cashSnapshots?: CashSnapshot[];
   end?: string; // default: last date in prices or today
 }
 
@@ -65,14 +79,26 @@ export function dateRange(start: string, end: string): string[] {
 }
 
 export function normalizeAction(raw: string): Action {
-  const a = raw.trim().toUpperCase();
-  if (/^(BUY|B|BOUGHT|ซื้อ)/.test(a)) return "BUY";
-  if (/^(SELL|S|SOLD|ขาย)/.test(a)) return "SELL";
-  if (/DEPOSIT|TOP.?UP|TRANSFER IN|CASH IN|FUND/.test(a)) return "DEPOSIT";
-  if (/WITHDRAW|TRANSFER OUT|CASH OUT/.test(a)) return "WITHDRAW";
+  const a = raw.trim().toUpperCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+  if (a === "STOCK DIVIDEND") return "STOCK_DIVIDEND";
+  if (a === "TRANSFER IN") return "TRANSFER_IN";
+  if (a === "TRANSFER OUT") return "TRANSFER_OUT";
+  if (a === "INTEREST INCOME") return "INTEREST_INCOME";
+  if (a === "INTEREST EXPENSE") return "INTEREST_EXPENSE";
+  if (/^(BUY\b|B$|BOUGHT\b|ซื้อ)/.test(a)) return "BUY";
+  if (/^(SELL\b|S$|SOLD\b|ขาย)/.test(a)) return "SELL";
+  if (/DEPOSIT|TOP.?UP|CASH IN|FUND/.test(a)) return "DEPOSIT";
+  if (/WITHDRAW|CASH OUT/.test(a)) return "WITHDRAW";
   if (/DIV/.test(a)) return "DIVIDEND";
-  if (/FEE|TAX/.test(a)) return "FEE";
+  if (/TAX/.test(a)) return "TAX";
+  if (/FEE/.test(a)) return "FEE";
   return "OTHER";
+}
+
+export function positionUnits(t: Transaction): number {
+  if (t.action === "BUY" || t.action === "STOCK_DIVIDEND" || (t.action === "TRANSFER_IN" && t.ticker && t.ticker !== "CASH")) return t.shares;
+  if (t.action === "SELL" || (t.action === "TRANSFER_OUT" && t.ticker && t.ticker !== "CASH")) return -t.shares;
+  return 0;
 }
 
 function fx(t: Transaction, usdThb: number): number {
@@ -113,15 +139,17 @@ export function computeNav(
   const usdThb = opts.usdThb ?? 35;
   const bench = opts.benchmarkTicker ?? "^GSPC";
   const autoFund = opts.autoFund ?? true;
-  if (txns.length === 0) return [];
+  const snapshots = opts.cashSnapshots ?? [];
+  if (!txns.length && !snapshots.length) return [];
 
   const sorted = [...txns].sort((a, b) => a.date.localeCompare(b.date));
-  const start = sorted[0].date;
+  const anchors = [...sorted.map((t) => t.date), ...snapshots.map((s) => s.date)].sort();
+  const start = anchors[0];
   const lastPriceDate = Object.values(prices).reduce((m, p) => {
     const ks = Object.keys(p);
     return ks.length ? (ks.sort().at(-1)! > m ? ks.sort().at(-1)! : m) : m;
   }, start);
-  const end = opts.end ?? (lastPriceDate > sorted.at(-1)!.date ? lastPriceDate : sorted.at(-1)!.date);
+  const end = opts.end ?? (lastPriceDate > anchors.at(-1)! ? lastPriceDate : anchors.at(-1)!);
 
   const lookup = new PriceLookup(prices);
   const native = new PriceLookup(opts.nativeThbPrices ?? {});
@@ -134,7 +162,21 @@ export function computeNav(
   const shares: Record<string, number> = {};
   const lastTrade: Record<string, number> = {};
   const lastThbTrade: Record<string, number> = {};
-  const balances: Record<string, number> = {};
+  const balances = new Map<string, { USD: number; THB: number }>();
+  const accountBalance = (account = "") => {
+    if (!balances.has(account)) balances.set(account, { USD: 0, THB: 0 });
+    return balances.get(account)!;
+  };
+  const observed = new Set<string>();
+  const snapshotAccounts = new Set(snapshots.map((s) => s.account));
+  const snapshotsByDate = new Map<string, CashSnapshot[]>();
+  for (const snapshot of snapshots) {
+    const sameDay = snapshotsByDate.get(snapshot.date) ?? [];
+    sameDay.push(snapshot);
+    snapshotsByDate.set(snapshot.date, sameDay);
+  }
+  const funded = new Set(sorted.filter((t) => t.action === "DEPOSIT" || (t.action === "TRANSFER_IN" && !positionUnits(t)))
+    .map((t) => JSON.stringify([t.account ?? "", t.currency === "THB" ? "THB" : "USD"])));
   let netDeposits = 0;
   let benchShares = 0;
   const out: NavPoint[] = [];
@@ -144,28 +186,48 @@ export function computeNav(
     const rate = opts.fxAt?.(date) ?? usdThb;
     const bp = lookup.get(bench, date) ?? 0;
     for (const t of byDate.get(date) ?? []) {
-      const currency = opts.separateCash && t.currency.toUpperCase() === "THB" ? "THB" : "USD";
+      const currency = t.currency.toUpperCase() === "THB" ? "THB" : "USD";
       const unit = currency === "THB" ? 1 / rate : 1;
       const k = fx(t, rate) / unit;
-      let cash = balances[currency] ?? 0;
+      const balance = accountBalance(t.account);
+      const key = JSON.stringify([t.account ?? "", currency]);
+      const cashKey = opts.separateCash || snapshotAccounts.has(t.account ?? "") ? currency : "USD";
+      const scale = cashKey === "THB" ? 1 : unit;
+      let cash = balance[cashKey] / scale;
       const gross = t.shares * t.price * k;
       const fee = (t.commission || 0) * k;
+      const amount = gross || (t.shares || t.price) * k;
       switch (t.action) {
+        case "TRANSFER_IN":
+        case "TRANSFER_OUT": {
+          const units = positionUnits(t);
+          if (t.ticker && t.ticker !== "CASH") {
+            shares[t.ticker] = (shares[t.ticker] ?? 0) + units;
+            const price = native.get(t.ticker, date);
+            const market = price !== undefined ? price / rate : lookup.get(t.ticker, date) ?? (t.price ? t.price * unit : lastTrade[t.ticker] ?? 0);
+            flow += units * market;
+            if (t.price) lastTrade[t.ticker] = t.price * unit;
+            cash -= fee;
+          } else {
+            const moved = t.action === "TRANSFER_IN" ? amount : -amount;
+            cash += moved - fee;
+            flow += moved * unit;
+          }
+          break;
+        }
         case "DEPOSIT": {
-          const amt = (t.price && t.shares ? gross : (t.shares || t.price) * k);
-          cash += amt;
-          flow += amt * unit;
+          cash += amount;
+          flow += amount * unit;
           break;
         }
         case "WITHDRAW": {
-          const amt = (t.price && t.shares ? gross : (t.shares || t.price) * k);
-          cash -= amt;
-          flow -= amt * unit;
+          cash -= amount;
+          flow -= amount * unit;
           break;
         }
         case "BUY": {
           const need = gross + fee;
-          if (autoFund && cash < need) {
+          if (autoFund && !observed.has(key) && !funded.has(key) && cash < need) {
             const gap = need - cash;
             cash += gap;
             flow += gap * unit;
@@ -186,11 +248,26 @@ export function computeNav(
         case "DIVIDEND":
           cash += (gross || t.price * k || 0) - fee;
           break;
+        case "INTEREST_INCOME":
+          cash += amount - fee;
+          break;
+        case "STOCK_DIVIDEND":
+          shares[t.ticker] = (shares[t.ticker] ?? 0) + t.shares;
+          break;
         case "FEE":
+        case "TAX":
+        case "INTEREST_EXPENSE":
           cash -= fee || gross || t.price * k || 0;
           break;
       }
-      balances[currency] = cash;
+      balance[cashKey] = cash * scale;
+    }
+    for (const snapshot of snapshotsByDate.get(date) ?? []) {
+      const balance = accountBalance(snapshot.account);
+      const unit = snapshot.currency === "THB" ? 1 / rate : 1;
+      flow += (snapshot.balance - balance[snapshot.currency]) * unit;
+      balance[snapshot.currency] = snapshot.balance;
+      observed.add(JSON.stringify([snapshot.account, snapshot.currency]));
     }
     netDeposits += flow;
     if (flow !== 0 && bp > 0) benchShares += flow / bp;
@@ -202,7 +279,12 @@ export function computeNav(
       const p = baht !== undefined ? baht / rate : lookup.get(tk, date) ?? lastTrade[tk] ?? 0;
       positions += n * p;
     }
-    const cash = (balances.USD ?? 0) + (balances.THB ?? 0) / rate;
+    const cashByCurrency = { USD: 0, THB: 0 };
+    for (const balance of balances.values()) {
+      cashByCurrency.USD += balance.USD;
+      cashByCurrency.THB += balance.THB;
+    }
+    const cash = cashByCurrency.USD + cashByCurrency.THB / rate;
     out.push({
       date,
       nav: positions + cash,
@@ -212,7 +294,7 @@ export function computeNav(
       flow,
       benchmark: benchShares * bp,
       benchmarkPrice: bp,
-      ...(opts.separateCash ? { cashByCurrency: { ...balances } } : {}),
+      ...(opts.separateCash ? { cashByCurrency: Object.fromEntries(Object.entries(cashByCurrency).filter(([, amount]) => amount !== 0)) } : {}),
     });
   }
   return out;

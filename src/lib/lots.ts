@@ -1,5 +1,5 @@
 import type { Transaction } from "./portfolioEngine";
-import { toMs } from "./portfolioEngine";
+import { positionUnits, toMs } from "./portfolioEngine";
 
 export const COST_METHODS = ["FIFO", "LIFO", "Weighted Average"] as const;
 export type CostMethod = (typeof COST_METHODS)[number];
@@ -40,25 +40,45 @@ export function buildLots(
     const b0 = bench(from), b1 = bench(to);
     return b0 && b1 ? ret - (b1 / b0 - 1) : NaN;
   };
-  for (const t of [...txns].sort((a, b) => a.date.localeCompare(b.date))) {
+  const byDay = new Map<string, Transaction[]>();
+  for (const trade of txns.filter((t) => positionUnits(t) !== 0)) {
+    const trades = byDay.get(trade.date) ?? [];
+    trades.push(trade);
+    byDay.set(trade.date, trades);
+  }
+  const ordered: Transaction[] = [];
+  let balance = 0;
+  for (const day of [...byDay.keys()].sort()) {
+    const trades = byDay.get(day)!;
+    let remaining = balance;
+    let needsSameDayBuy = false;
+    for (const trade of trades) {
+      remaining += positionUnits(trade);
+      if (remaining < -1e-9) needsSameDayBuy = true;
+    }
+    // Date-only exports can list the sale first even when a same-day purchase covers it.
+    ordered.push(...(needsSameDayBuy ? [...trades].sort((a, b) => Math.sign(positionUnits(b)) - Math.sign(positionUnits(a))) : trades));
+    balance = Math.max(0, remaining);
+  }
+  for (const t of ordered) {
     if (!(t.shares > 0)) continue;
     const k = t.currency === "THB" ? 1 / (typeof usdThb === "number" ? usdThb : usdThb(t.date)) : 1;
     const fee = includeFees ? t.commission / t.shares : 0;
-    if (t.action === "BUY") {
+    if (positionUnits(t) > 0) {
       q.push({ date: t.date, price: (t.price + fee) * k, shares: t.shares, ccy: t.currency });
       if (method === "Weighted Average") {
         const average = q.reduce((sum, lot) => sum + lot.price * lot.shares, 0) / q.reduce((sum, lot) => sum + lot.shares, 0);
         q.forEach((lot) => { lot.price = average; });
       }
     }
-    else if (t.action === "SELL") {
+    else {
       let left = t.shares;
       while (left > 1e-9 && q.length) {
         const l = method === "LIFO" ? q.at(-1)! : q[0];
         const exit = (t.price - fee) * k;
         const n = Math.min(l.shares, left);
         const ret = l.price ? exit / l.price - 1 : 0;
-        out.push({
+        if (t.action === "SELL") out.push({
           side: "SELL", date: l.date, closeDate: t.date, price: l.price, exit, ccy: l.ccy, shares: n,
           cost: n * l.price, gain: n * (exit - l.price), ret, alpha: alphaOf(ret, l.date, t.date), days: days(l.date, t.date), open: false,
         });

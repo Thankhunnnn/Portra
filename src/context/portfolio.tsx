@@ -5,9 +5,10 @@ import type { User } from "firebase/auth";
 import { firebaseConfigured, getStoredToken, signInWithGoogle, signOut as doSignOut, watchAuth } from "@/lib/firebase";
 import {
   AuthError, DEFAULT_SETTINGS, LEGACY_TABS, parsePriceHistory, fetchTab, parseDashboard, parseExtendedPrices, parseTransactions, parseFxRates, parseDividendSchedule,
+  parseAssetMetadata, parseCashSnapshots, type AssetMetadata,
   type AccountFilter, type DashboardData, type Position, type Quote, type Settings, type FxRate, type DividendSchedule,
 } from "@/lib/sheets";
-import { computeNav, summarize, PriceLookup, type EngineOptions, type NavPoint, type PerformanceSummary, type PriceMap, type Transaction } from "@/lib/portfolioEngine";
+import { computeNav, summarize, PriceLookup, positionUnits, type CashSnapshot, type EngineOptions, type NavPoint, type PerformanceSummary, type PriceMap, type Transaction } from "@/lib/portfolioEngine";
 import { addMonths, todayInBangkok } from "@/lib/reportDates";
 import { demoDashboard, demoMeta, demoPrices, demoTransactions } from "@/lib/demo";
 import { BENCHMARKS } from "@/lib/benchmarks";
@@ -31,6 +32,12 @@ export interface Holding {
   allocation: number;
   sector: string;
   theme: string;
+}
+
+interface PortfolioValue {
+  value: number;
+  change: number;
+  dayReturn: number;
 }
 
 interface Ctx {
@@ -71,6 +78,8 @@ interface Ctx {
   prices: PriceMap;
   cashUsd: number;
   netWorthUsd: number;
+  dayChange: PortfolioValue;
+  accountValues: Record<string, PortfolioValue & { summary: PerformanceSummary; available: boolean }>;
 }
 
 const PortfolioCtx = createContext<Ctx | null>(null);
@@ -106,6 +115,8 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
   const [marketPrices, setPrices] = useState<PriceMap>({});
   const [fxRows, setFxRows] = useState<FxRate[]>([]);
   const [dividendSchedule, setDividendSchedule] = useState<DividendSchedule[]>([]);
+  const [assetMetadata, setAssetMetadata] = useState<Record<string, AssetMetadata>>({});
+  const [cashSnapshots, setCashSnapshots] = useState<CashSnapshot[]>([]);
   const assetKey = JSON.stringify(["portra.custom-assets", mode, mode === "live" ? user?.uid : "demo", settings.sheetId]);
   const [assetStore, setAssetStore] = useState<{ key: string; assets: CustomAsset[] }>();
   const customAssets = useMemo(() => assetStore?.key === assetKey ? assetStore.assets : [], [assetStore, assetKey]);
@@ -173,6 +184,8 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
         setPrices(p);
         setFxRows([]);
         setDividendSchedule([]);
+        setAssetMetadata({});
+        setCashSnapshots([]);
         setDashboard({
           ...dash,
           cash: fullDemo ? dash.cash : undefined,
@@ -200,12 +213,14 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
         if (error instanceof AuthError) throw error;
         return [];
       }) : Promise.resolve([]);
-      const [dashRows, priceRows, fxData, dividendData, historyRows, ...txRows] = await Promise.all([
+      const [dashRows, priceRows, fxData, dividendData, historyRows, metadataRows, balanceRows, ...txRows] = await Promise.all([
         fetchTab(token, settings.sheetId, settings.dashboardTab),
         optionalTab(settings.pricesTab).then((rows) => rows.length || settings.pricesTab !== "Portra_Prices" ? rows : optionalTab("Extended_Prices")),
         optionalTab(settings.fxTab),
         optionalTab(settings.dividendsTab),
         optionalTab("Price_History"),
+        optionalTab("Asset_Metadata"),
+        optionalTab("Cash_Balances"),
         ...tabs.map(([, tab]) => fetchTab(token, settings.sheetId, tab)),
       ]);
       const tx = tabs.flatMap(([name], i) => parseTransactions(txRows[i], name));
@@ -218,6 +233,11 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
       const q = parseExtendedPrices(priceRows).map((quote) => ({ ...quote, source: quote.source || settings.pricesTab }));
       const nextFx = parseFxRates(fxData);
       const nextDividends = parseDividendSchedule(dividendData);
+      const nextMetadata = parseAssetMetadata(metadataRows);
+      const nextBalances = parseCashSnapshots(balanceRows).flatMap((snapshot) => {
+        const name = portfolios.find((portfolio) => portfolio.toLowerCase() === snapshot.account.toLowerCase());
+        return name ? [{ ...snapshot, account: name }] : [];
+      });
       const from = tx.reduce((first, t) => t.date < first ? t.date : first, addMonths(todayInBangkok(), -12));
       const symbols = [...new Set([...BENCHMARKS.map((entry) => entry.ticker), "THB=X", ...tx.filter((t) => t.ticker).map(symbolFor), ...parsedDashboard.positions.map((p) => p.ticker)])];
       const history = parsePriceHistory(historyRows);
@@ -236,6 +256,8 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
       if (id !== loadId.current) return;
       setFxRows(nextFx);
       setDividendSchedule(nextDividends);
+      setAssetMetadata(nextMetadata);
+      setCashSnapshots(nextBalances);
       setDashboard(parsedDashboard);
       setQuotesArr(q);
       setAllTxns(tx);
@@ -259,6 +281,8 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
     if (mode === "live") {
       setFxRows([]);
       setDividendSchedule([]);
+      setAssetMetadata({});
+      setCashSnapshots([]);
       setDashboard({ sectors: [], themes: [], positions: [] });
       setAllTxns([]);
       setQuotesArr([]);
@@ -341,8 +365,10 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
   const cv = useCallback((usd: number) => (currency === "THB" ? usd * usdThb : usd), [currency, usdThb]);
   const nativeThbPrices = useMemo(() => Object.fromEntries(customAssets.filter((asset) => asset.currency === "THB")
     .map((asset) => [asset.ticker, asset.prices])), [customAssets]);
-  const engineOptions = useMemo(() => ({ usdThb, fxAt, nativeThbPrices, separateCash: settings.separateCash }),
-    [usdThb, fxAt, nativeThbPrices, settings.separateCash]);
+  const activeSnapshots = useMemo(() => cashSnapshots.filter((s) => s.date <= today), [cashSnapshots, today]);
+  const selectedSnapshots = useMemo(() => account === "All" ? activeSnapshots : activeSnapshots.filter((s) => s.account === account), [activeSnapshots, account]);
+  const engineOptions = useMemo(() => ({ usdThb, fxAt, nativeThbPrices, separateCash: settings.separateCash, cashSnapshots: selectedSnapshots }),
+    [usdThb, fxAt, nativeThbPrices, settings.separateCash, selectedSnapshots]);
   const prices = useMemo(() => ({
     ...marketPrices,
     ...Object.fromEntries(customAssets.map((asset) => [asset.ticker, Object.fromEntries(Object.entries(asset.prices).map(([date, price]) =>
@@ -358,18 +384,19 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
   const nav = useMemo(() => computeNav(txns, prices, engineOptions), [txns, prices, engineOptions]);
   const summary = useMemo(() => summarize(nav), [nav]);
 
-  const holdings = useMemo(() => {
-    const positions = portfolios.filter((name) => account === "All" || name === account).flatMap((name) => {
+  const portfolioHoldings = useMemo(() => {
+    const positionsByAccount = new Map(portfolios.map((name) => {
       const fromSheet = dashboard.positions.filter((p) => p.account === name);
       const crypto = settings.cryptoAccounts.includes(name) || (demoDefaults && name === "Binance");
       const ownTrades = allTxns.filter((t) => t.account === name);
       const derived = derivePositions(ownTrades, name, crypto, fxAt, settings.costMethod);
-      if (!fromSheet.length || crypto) return derived;
-      return [...derived.map((position) => {
+      if (!fromSheet.length || crypto) return [name, derived] as const;
+      const positions = [...derived.map((position) => {
         const sheet = fromSheet.find((row) => row.ticker === position.ticker);
         return sheet ? { ...sheet, shares: position.shares, avgCost: position.avgCost } : position;
-      }), ...fromSheet.filter((row) => !ownTrades.some((trade) => trade.ticker === row.ticker && (trade.action === "BUY" || trade.action === "SELL")))];
-    });
+      }), ...fromSheet.filter((row) => !ownTrades.some((trade) => trade.ticker === row.ticker && positionUnits(trade) !== 0))];
+      return [name, positions] as const;
+    }));
 
     const lastOf = (t: string) => {
       const m = prices[t];
@@ -377,6 +404,7 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
       const ds = Object.keys(m).sort();
       return { p: m[ds.at(-1)!], prev: ds.length > 1 ? m[ds.at(-2)!] : undefined };
     };
+    const valuePositions = (positions: Position[]) => {
     const grouped = new Map<string, Position[]>();
     positions.forEach((p) => grouped.set(p.ticker, [...(grouped.get(p.ticker) ?? []), p]));
     const rows = [...grouped.entries()].map(([ticker, ps]) => {
@@ -390,20 +418,29 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
       const ext = q && EXT_RE.test(q.session);
       const prev = (ext ? q?.regularClose : undefined) || h.prev || q?.regularClose || last;
       const value = shares * last;
-      const meta = demoMeta(ticker);
+      const metadata = assetMetadata[ticker];
+      const meta = mode === "demo" ? demoMeta(ticker) : undefined;
+      const sector = ps.find((position) => position.sector !== "Other")?.sector;
+      const theme = ps.find((position) => position.theme !== "Other")?.theme;
       return {
         ticker, accounts: [...new Set(ps.map((p) => p.account))], shares,
         avgCost: shares ? cost / shares : 0, last, prevClose: prev, cost, value,
         dayGain: shares * (last - prev), dayGainPct: prev ? last / prev - 1 : 0,
         unrGain: value - cost, unrGainPct: cost ? value / cost - 1 : 0, allocation: 0,
-        sector: ps[0].sector !== "Other" ? ps[0].sector : meta?.sector ?? "Other",
-        theme: ps[0].theme !== "Other" ? ps[0].theme : meta?.theme ?? "Other",
+        sector: metadata?.sector || sector || meta?.sector || "Unclassified",
+        theme: metadata?.theme || theme || meta?.theme || "Unclassified",
       } as Holding;
     });
     const total = rows.reduce((s, r) => s + r.value, 0);
     rows.forEach((r) => (r.allocation = total ? r.value / total : 0));
     return rows;
-  }, [dashboard.positions, allTxns, account, quotes, prices, portfolios, settings.cryptoAccounts, fxAt, settings.costMethod, demoDefaults, nativeThbPrices, usdThb]);
+    };
+    return {
+      all: valuePositions([...positionsByAccount.values()].flat()),
+      byAccount: Object.fromEntries([...positionsByAccount].map(([name, positions]) => [name, valuePositions(positions)])),
+    };
+  }, [dashboard.positions, allTxns, quotes, prices, portfolios, settings.cryptoAccounts, fxAt, settings.costMethod, demoDefaults, nativeThbPrices, usdThb, assetMetadata, mode]);
+  const holdings = account === "All" ? portfolioHoldings.all : portfolioHoldings.byAccount[account];
 
   const cashUsd = useMemo(() => {
     if (account === "All" && !settings.separateCash && !customAssets.length && dashboard.cash != null) return dashboard.cash;
@@ -413,22 +450,40 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
     if (account === "All" && !settings.separateCash && !customAssets.length && dashboard.netWorth != null) return dashboard.netWorth;
     return holdings.reduce((s, h) => s + h.value, 0) + cashUsd;
   }, [account, dashboard.netWorth, holdings, cashUsd, settings.separateCash, customAssets]);
+  const dayChange = getPortfolioValue(holdings, cashUsd, netWorthUsd);
+  const accountValues = useMemo(() => Object.fromEntries(portfolios.map((name) => {
+    const accountNav = computeNav(allTxns.filter((t) => t.account === name), prices, {
+      ...engineOptions,
+      cashSnapshots: activeSnapshots.filter((s) => s.account === name),
+    });
+    const positions = portfolioHoldings.byAccount[name];
+    return [name, {
+      ...getPortfolioValue(positions, accountNav.at(-1)?.cash ?? 0),
+      summary: summarize(accountNav),
+      available: Boolean(positions.length || accountNav.length),
+    }];
+  })), [allTxns, activeSnapshots, engineOptions, portfolioHoldings, portfolios, prices]);
 
   const session: Ctx["session"] = quotesArr.some((q) => EXT_RE.test(q.session)) ? "EXTENDED" : "REGULAR";
 
   const value: Ctx = {
     mode, user, authError, signIn, startDemo, signOut, loading, error, lastUpdated, session, refresh,
     settings, saveSettings, portfolios, account, setAccount, currency, setCurrency, usdThb, cv, fxAt, fxSource, engineOptions, dividendSchedule, customAssets, saveCustomAssets,
-    txns, allTxns, holdings, nav, summary, dashboard, quotes, prices, cashUsd, netWorthUsd,
+    txns, allTxns, holdings, nav, summary, dashboard, quotes, prices, cashUsd, netWorthUsd, dayChange, accountValues,
   };
   return <PortfolioCtx.Provider value={value}>{children}</PortfolioCtx.Provider>;
 }
 
 /** Open trade lots grouped into one position per ticker. */
+function getPortfolioValue(holdings: Holding[], cash: number, value = holdings.reduce((total, holding) => total + holding.value, cash)): PortfolioValue {
+  const change = holdings.reduce((total, holding) => total + holding.dayGain, 0);
+  return { value, change, dayReturn: value - change ? change / (value - change) : 0 };
+}
+
 export function derivePositions(txns: Transaction[], account: Position["account"], crypto: boolean, fxAt: (date: string) => number, method: CostMethod): Position[] {
   const groups = new Map<string, Transaction[]>();
   for (const t of txns) {
-    if (!t.ticker || (t.action !== "BUY" && t.action !== "SELL")) continue;
+    if (!t.ticker || !positionUnits(t)) continue;
     const group = groups.get(t.ticker) ?? [];
     group.push(t);
     groups.set(t.ticker, group);

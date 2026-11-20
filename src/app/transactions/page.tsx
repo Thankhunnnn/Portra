@@ -9,6 +9,8 @@ import { sheetUrl } from "@/lib/sheets";
 import { cn, fmtNum } from "@/lib/utils";
 
 const inputCls = "h-8 w-full rounded-lg border border-line bg-header px-2 text-[13px] outline-none focus:border-brand";
+const actions = ["BUY", "SELL", "DEPOSIT", "WITHDRAW", "TRANSFER_IN", "TRANSFER_OUT", "FEE", "TAX",
+  "INTEREST_INCOME", "INTEREST_EXPENSE", "DIVIDEND", "STOCK_DIVIDEND", "OTHER"];
 
 export default function Transactions() {
   const { txns, settings, mode } = usePortfolio();
@@ -62,7 +64,7 @@ export default function Transactions() {
           <label className="text-[11px] text-mute">Date from<input type="date" placeholder="yyyy-mm-dd" value={f.from} onChange={set("from")} className={inputCls} /></label>
           <label className="text-[11px] text-mute">Date to<input type="date" placeholder="yyyy-mm-dd" value={f.to} onChange={set("to")} className={inputCls} /></label>
           <label className="text-[11px] text-mute">Action
-            <select value={f.action} onChange={set("action")} className={inputCls}><option value="">All</option>{["BUY", "SELL", "DEPOSIT", "WITHDRAW", "DIVIDEND", "FEE"].map((a) => <option key={a}>{a}</option>)}</select>
+            <select value={f.action} onChange={set("action")} className={inputCls}><option value="">All</option>{actions.map((a) => <option key={a} value={a}>{a.replaceAll("_", " ")}</option>)}</select>
           </label>
           <label className="text-[11px] text-mute">Ticker<input value={f.ticker} onChange={set("ticker")} className={inputCls} /></label>
           <label className="text-[11px] text-mute">Currency

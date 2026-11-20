@@ -6,7 +6,7 @@ import { Segmented } from "@/components/ui/segmented";
 import { controlClass, DataTable, Metrics, panelClass, ReportChart } from "@/components/Reports";
 import { PERIODS, periodStart, type Period } from "@/components/charts/ValueChart";
 import { buildLots, lotStats } from "@/lib/lots";
-import { PriceLookup, type Transaction } from "@/lib/portfolioEngine";
+import { PriceLookup, positionUnits, type Transaction } from "@/lib/portfolioEngine";
 import { todayInBangkok } from "@/lib/reportDates";
 import { fmtMoney, fmtNum, fmtPct, gainClass } from "@/lib/utils";
 
@@ -24,7 +24,8 @@ export default function TradeAnalysis() {
   const [flags, setFlags] = useState(true);
   const today = todayInBangkok();
   const trades = useMemo(() => txns.filter((t) => t.ticker && t.shares > 0 && (t.action === "BUY" || t.action === "SELL")), [txns]);
-  const tickers = [...new Set(trades.map((t) => t.ticker))].sort();
+  const positionTrades = useMemo(() => txns.filter((t) => t.ticker && positionUnits(t) !== 0), [txns]);
+  const tickers = [...new Set(positionTrades.map((t) => t.ticker))].sort();
   const symbol = tickers.includes(ticker) ? ticker : "";
   const index = "^GSPC";
   const chartTicker = symbol || index;
@@ -33,7 +34,7 @@ export default function TradeAnalysis() {
 
   const lots = useMemo(() => {
     const groups = new Map<string, Transaction[]>();
-    for (const t of trades) {
+    for (const t of positionTrades) {
       if (symbol && t.ticker !== symbol) continue;
       const key = JSON.stringify([t.account, t.ticker]);
       const group = groups.get(key) ?? [];
@@ -48,7 +49,7 @@ export default function TradeAnalysis() {
       return buildLots(group, last, today, (date) => lookup.get(index, date), fxAt, settings.costMethod)
         .map((lot, i) => ({ ...lot, ticker, account, id: JSON.stringify([account, ticker, i]) }));
     }).sort((a, b) => b.date.localeCompare(a.date));
-  }, [trades, symbol, quotes, lookup, holdings, fxAt, settings.costMethod, today]);
+  }, [positionTrades, symbol, quotes, lookup, holdings, fxAt, settings.costMethod, today]);
 
   const visible = lots.filter((lot) => (status === "All lots" || lot.open === (status === "Open")) &&
     (outcome === "All results" || (outcome === "Winners" ? lot.gain > 0 : lot.gain < 0)));

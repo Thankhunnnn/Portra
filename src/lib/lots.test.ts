@@ -6,6 +6,24 @@ const tx = (p: Partial<Transaction>): Transaction => ({ date: "2024-01-01", tick
 const bench = (d: string) => (d < "2024-06-01" ? 100 : 110);
 
 describe("buildLots", () => {
+  it("pairs a sale listed before its same-day fractional purchase", () => {
+    const lots = buildLots([
+      tx({ action: "SELL", shares: 2.5, price: 12 }),
+      tx({ shares: 2.5, price: 10 }),
+    ], 20, "2024-01-02", () => undefined);
+    expect(lots).toHaveLength(1);
+    expect(lots[0]).toMatchObject({ open: false, shares: 2.5, gain: 5 });
+  });
+
+  it("keeps transferred and stock-dividend shares in the position without fabricating a sale", () => {
+    const lots = buildLots([
+      tx({ action: "TRANSFER_IN", shares: 2, price: 10 }),
+      tx({ action: "STOCK_DIVIDEND", shares: 0.5, price: 0 }),
+      tx({ action: "TRANSFER_OUT", shares: 1, date: "2024-01-02" }),
+    ], 20, "2024-01-03", () => undefined);
+    expect(lots.every((lot) => lot.open)).toBe(true);
+    expect(lots.reduce((sum, lot) => sum + lot.shares, 0)).toBe(1.5);
+  });
   it("matches sells FIFO and keeps remainder open", () => {
     const lots = buildLots(
       [tx({}), tx({ date: "2024-02-01", price: 20 }), tx({ date: "2024-07-01", action: "SELL", shares: 15, price: 30 })],

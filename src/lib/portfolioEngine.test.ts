@@ -89,6 +89,36 @@ describe("computeNav", () => {
     expect(nav[0].cash).toBeCloseTo(0);
   });
 
+  it("uses broker cash at the end of the snapshot day and carries subsequent transactions", () => {
+    const nav = computeNav([
+      tx({ account: "Webull", date: "2024-01-01", ticker: "AAA", action: "BUY", shares: 10, price: 10 }),
+      tx({ account: "Dime", date: "2024-01-01", action: "DEPOSIT", shares: 1, price: 200 }),
+      tx({ account: "Webull", date: "2024-01-03", ticker: "AAA", action: "SELL", shares: 2, price: 12 }),
+    ], prices, { cashSnapshots: [{ account: "Webull", date: "2024-01-02", currency: "USD", balance: 122.41 }] });
+    expect(nav[1].flow).toBeCloseTo(122.41);
+    expect(nav[1].cash).toBeCloseTo(322.41);
+    expect(nav[2].cash).toBeCloseTo(346.41);
+    expect(nav[2].flow).toBe(0);
+    expect(nav[2].positions).toBeCloseTo(96);
+  });
+
+  it("distinguishes charges and income from cash and stock transfers", () => {
+    const nav = computeNav([
+      tx({ account: "A", action: "DEPOSIT", shares: 1, price: 100 }),
+      tx({ account: "A", ticker: "CASH", action: "TRANSFER_OUT", shares: 1, price: 30 }),
+      tx({ account: "B", ticker: "CASH", action: "TRANSFER_IN", shares: 1, price: 30 }),
+      tx({ account: "B", ticker: "AAA", action: "TRANSFER_IN", shares: 10, price: 10 }),
+      tx({ account: "B", ticker: "AAA", action: "STOCK_DIVIDEND", shares: 2, price: 0 }),
+      tx({ account: "B", ticker: "CASH", action: "INTEREST_INCOME", shares: 1, price: 5 }),
+      tx({ account: "B", ticker: "CASH", action: "INTEREST_EXPENSE", shares: 1, price: 2 }),
+      tx({ account: "B", ticker: "CASH", action: "TAX", shares: 1, price: 1 }),
+    ], prices);
+    expect(nav[0]).toMatchObject({ cash: 102, positions: 120, netDeposits: 200 });
+    expect(normalizeAction("Stock dividend")).toBe("STOCK_DIVIDEND");
+    expect(normalizeAction("Interest expense")).toBe("INTEREST_EXPENSE");
+    expect(normalizeAction("Taxes")).toBe("TAX");
+  });
+
   it("converts gross THB dividends and fees once", () => {
     const nav = computeNav([
       tx({ date: "2024-01-02", ticker: "AAA", action: "DIVIDEND", shares: 2, price: 180, commission: 36, currency: "THB" }),

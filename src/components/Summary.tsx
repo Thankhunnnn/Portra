@@ -5,19 +5,16 @@ import { usePortfolio } from "@/context/portfolio";
 import { useUi } from "@/components/shell/ui-context";
 import { Button } from "@/components/ui/button";
 import { Segmented } from "@/components/ui/segmented";
-import { computeNav } from "@/lib/portfolioEngine";
 import { BENCHMARKS, benchmarkPath } from "@/lib/benchmarks";
 import { fmtMoney, fmtNum, fmtPct, gainClass } from "@/lib/utils";
 
 const TABS = ["Benchmark", "Key Stats", "P&L Breakdown", "Gains & Returns"] as const;
 
 export function SummaryHeader({ home = false }: { home?: boolean } = {}) {
-  const { netWorthUsd, cashUsd, holdings, cv, currency, summary, nav, settings, account, usdThb } = usePortfolio();
+  const { netWorthUsd, cashUsd, holdings, cv, currency, summary, nav, settings, account, usdThb, dayChange } = usePortfolio();
   const [localHide, setLocalHide] = useState(false);
   const { hideHomeValues, toggleHomeValues } = useUi();
   const hide = home ? hideHomeValues : localHide;
-  const today = holdings.reduce((s, h) => s + h.dayGain, 0);
-  const todayPct = netWorthUsd - today ? today / (netWorthUsd - today) : 0;
   const m = (v: number) => (hide ? "••••••" : fmtMoney(cv(v), currency));
   const alternate = currency === "USD" ? fmtMoney(netWorthUsd * usdThb, "THB") : fmtMoney(netWorthUsd, "USD");
   const invested = holdings.reduce((sum, h) => sum + h.cost, 0);
@@ -35,7 +32,7 @@ export function SummaryHeader({ home = false }: { home?: boolean } = {}) {
           {!hide && <div className="num text-sm text-sub">{alternate}</div>}
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
-          <Chg label="Today" abs={today} pct={todayPct} hide={hide} />
+          <Chg label="Today" abs={dayChange.change} pct={dayChange.dayReturn} hide={hide} />
           <Chg label="Total gain" abs={summary.totalGain} pct={summary.netDeposits ? summary.totalGain / summary.netDeposits : 0} hide={hide} />
         </div>
       </div>
@@ -144,41 +141,33 @@ function BenchmarkChanges() {
 
 export function AccountCards() {
   const { hideHomeValues } = useUi();
-  const { allTxns, prices, engineOptions, cv, currency, portfolios, account, setAccount, settings, saveSettings } = usePortfolio();
+  const { accountValues, prices, cv, currency, portfolios, account, setAccount, settings, saveSettings } = usePortfolio();
   const enabled = settings.benchmarks;
   const [editing, setEditing] = useState(false);
   function toggle(ticker: string) {
     saveSettings({ ...settings, benchmarks: enabled.includes(ticker) ? enabled.filter((symbol) => symbol !== ticker) : [...enabled, ticker] });
   }
 
-  const rows = useMemo(() => portfolios.map((a) => {
-    const nav = computeNav(allTxns.filter((t) => t.account === a), prices, engineOptions);
-    const latest = nav.at(-1);
-    const prior = nav.at(-2);
-    const change = latest && prior ? latest.nav - prior.nav - latest.flow : NaN;
-    return {
-      name: a, available: Boolean(latest), value: latest?.nav ?? NaN, change,
-      dayReturn: prior && prior.nav > 0 ? change / prior.nav : NaN,
-      totalGain: latest ? latest.nav - latest.netDeposits : NaN,
-      totalReturn: latest && latest.netDeposits > 0 ? (latest.nav - latest.netDeposits) / latest.netDeposits : NaN,
-    };
-  }), [allTxns, prices, engineOptions, portfolios]);
   const money = (value: number) => fmtMoney(cv(value), currency);
 
   return <section className="space-y-5">
     <div>
       <h2 className="mb-3 font-semibold">Portfolios</h2>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        {rows.map((row) => <button key={row.name} type="button" aria-pressed={account === row.name} onClick={() => setAccount(account === row.name ? "All" : row.name)}
-          className={`rounded-xl border bg-card p-4 text-left transition-colors hover:bg-cardwarm ${account === row.name ? "border-brand" : "border-line"}`}>
-          <span className="text-sm text-sub">{row.name}</span>
-          <strong className="num mt-1 block text-xl">{hideHomeValues ? "••••" : money(row.value)}</strong>
+        {portfolios.map((name) => {
+          const row = accountValues[name];
+          const { totalGain, netDeposits } = row.summary;
+          return <button key={name} type="button" aria-pressed={account === name} onClick={() => setAccount(account === name ? "All" : name)}
+          className={`rounded-xl border bg-card p-4 text-left transition-colors hover:bg-cardwarm ${account === name ? "border-brand" : "border-line"}`}>
+          <span className="text-sm text-sub">{name}</span>
+          <strong className="num mt-1 block text-xl">{hideHomeValues ? "••••" : money(row.available ? row.value : NaN)}</strong>
           {row.available ? <span className="mt-2 grid gap-1 text-xs">
             <span className={gainClass(row.change)}><span className="text-mute">Today </span>{hideHomeValues ? "••••" : money(row.change)} ({fmtPct(row.dayReturn)})</span>
-            <span className={gainClass(row.totalGain)}><span className="text-mute">All time </span>{hideHomeValues ? "••••" : money(row.totalGain)} ({fmtPct(row.totalReturn)})</span>
+            <span className={gainClass(totalGain)}><span className="text-mute">All time </span>{hideHomeValues ? "••••" : money(totalGain)} ({fmtPct(netDeposits ? totalGain / netDeposits : 0)})</span>
           </span> : <span className="mt-2 block text-xs text-mute">No transactions</span>}
-        </button>)}
-        {!rows.length && <p className="text-sm text-mute">No portfolios configured</p>}
+        </button>;
+        })}
+        {!portfolios.length && <p className="text-sm text-mute">No portfolios configured</p>}
       </div>
     </div>
     <div>

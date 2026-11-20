@@ -38,7 +38,7 @@ export function periodStart(p: Period, end: string, first: string): string {
 export function ValueChart() {
   const { hideHomeValues } = useUi();
   const animate = useChartMotion();
-  const { nav, prices, settings, currency, fxAt, loading } = usePortfolio();
+  const { nav, prices, settings, currency, fxAt, loading, holdings } = usePortfolio();
   const [mode, setMode] = useState<Mode>("Value");
   const [period, setPeriod] = useState<Period>("All");
   const [hidden, setHidden] = useState<Record<string, boolean>>({});
@@ -76,10 +76,17 @@ export function ValueChart() {
   const money = (v: number) => hideHomeValues ? "••••" : fmtMoney(v, currency);
   const isPct = mode === "Return";
   const f = (v: number) => (isPct ? fmtPct(v) : money(v));
+  const lastDate = data.at(-1)?.date;
+  const lastClose = useMemo(() => lastDate ? holdings.reduce((latest, holding) =>
+    Object.keys(prices[holding.ticker] ?? {}).reduce((date, close) =>
+      close <= lastDate && close > date ? close : date, latest), "") : "", [holdings, prices, lastDate]);
 
   return (
     <section className="rounded-2xl bg-card p-4 sm:p-6">
-      <h2 className="mb-4 text-lg font-semibold tracking-tight">Portfolio history</h2>
+      <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-lg font-semibold tracking-tight">Portfolio history</h2>
+        {lastClose && <p className="text-xs text-mute">Latest close · {fmtLongDate(lastClose)}</p>}
+      </div>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <Segmented value={mode} onChange={setMode} options={MODES} label="Chart mode" />
         <Segmented value={period} onChange={setPeriod} options={PERIODS} className="max-w-full flex-wrap" label="Chart period" />

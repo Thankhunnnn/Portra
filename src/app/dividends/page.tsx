@@ -8,6 +8,7 @@ import { Segmented } from "@/components/ui/segmented";
 import { AllocationDonut } from "@/components/charts/OtherCharts";
 import { controlClass, DataTable, Metrics, panelClass, ReportChart } from "@/components/Reports";
 import { addMonths, todayInBangkok } from "@/lib/reportDates";
+import { positionUnits } from "@/lib/portfolioEngine";
 import { fmtMoney, fmtPct } from "@/lib/utils";
 
 const tabs = ["Upcoming", "Historical", "Positions"] as const;
@@ -38,7 +39,8 @@ export default function Dividends() {
   for (const [id, t] of txns.entries()) {
     if (t.date > today) continue;
     const key = positionKey(t.account, t.ticker);
-    if (t.action === "BUY" || t.action === "SELL") shares.set(key, (shares.get(key) ?? 0) + (t.action === "BUY" ? t.shares : -t.shares));
+    const units = positionUnits(t);
+    if (units) shares.set(key, (shares.get(key) ?? 0) + units);
     if (t.action === "DIVIDEND") history.push({
       id: `received-${id}`, date: t.date, ticker: t.ticker || "Unassigned", account: t.account,
       amount: ((t.shares * t.price || t.price) - t.commission) * usd(t.currency, fxAt(t.date)), upcoming: false,
@@ -51,8 +53,9 @@ export default function Dividends() {
     const eligible = new Map<string, number>();
     for (const trade of txns) {
       if (trade.ticker !== entry.ticker || !trade.account || trade.date > cutoff ||
-          (entry.exDate && trade.date === entry.exDate) || (trade.action !== "BUY" && trade.action !== "SELL")) continue;
-      eligible.set(trade.account, (eligible.get(trade.account) ?? 0) + (trade.action === "BUY" ? trade.shares : -trade.shares));
+          (entry.exDate && trade.date === entry.exDate)) continue;
+      const units = positionUnits(trade);
+      if (units) eligible.set(trade.account, (eligible.get(trade.account) ?? 0) + units);
     }
     return [...eligible].flatMap(([account, quantity]) => quantity > 1e-9 && !history.some((payment) =>
       payment.ticker === entry.ticker && payment.account === account && payment.date === entry.paymentDate) ? [{

@@ -318,6 +318,27 @@ export function parseDashboard(rows: Row[], txTabs: Settings["txTabs"] = LEGACY_
 }
 
 export interface FxRate { date: string; rate: number; source: string }
+export interface AssetMetadata { sector: string; theme: string }
+
+export function parseAssetMetadata(rows: Row[]): Record<string, AssetMetadata> {
+  return Object.fromEntries(readFeed(rows, "Asset metadata", ["Ticker", "Sector", "Theme"], (ticker, sector, theme) => {
+    const symbol = String(ticker ?? "").trim().toUpperCase();
+    return symbol ? [symbol, { sector: String(sector ?? "").trim(), theme: String(theme ?? "").trim() }] as const : undefined;
+  }));
+}
+
+export function parseCashSnapshots(rows: Row[]): import("./portfolioEngine").CashSnapshot[] {
+  const entries = readFeed(rows, "Cash balances", ["Date", "Account", "Currency", "Balance"], (date, name, currency, balance) => {
+    const day = toIsoDate(date);
+    const account = String(name ?? "").trim();
+    const unit = String(currency ?? "").trim().toUpperCase();
+    const amount = num(balance);
+    return /^\d{4}-\d{2}-\d{2}$/.test(day) && account && (unit === "USD" || unit === "THB") && Number.isFinite(amount)
+      ? { date: day, account, currency: unit, balance: amount } as const : undefined;
+  });
+  return [...new Map(entries.map((entry) => [JSON.stringify([entry.date, entry.account.toLowerCase(), entry.currency]), entry])).values()];
+}
+
 export interface DividendSchedule {
   ticker: string;
   exDate: string;
