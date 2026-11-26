@@ -15,6 +15,7 @@ function portraEnableWebRefresh() {
 }
 
 function doPost(event) {
+  if (event?.parameter?.sheetsAuth) return portraSheetsAuth(event.parameter);
   // The web app can enqueue one job. It returns no spreadsheet data and
   // never takes a sheet ID, symbol list, or destination from the caller.
   const respond = (value) => ContentService.createTextOutput(value);

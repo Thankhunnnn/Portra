@@ -13,6 +13,7 @@ import { addMonths, todayInBangkok } from "@/lib/reportDates";
 import { demoDashboard, demoMeta, demoPrices, demoTransactions } from "@/lib/demo";
 import { BENCHMARKS } from "@/lib/benchmarks";
 import { readSettings, writeSettings } from "@/lib/settingsSync";
+import { sheetsAccessToken, sheetsConnectionEnabled } from "@/lib/sheetsConnection";
 import { buildLots, type CostMethod } from "@/lib/lots";
 import type { CustomAsset } from "@/lib/customAssets";
 import type { Currency } from "@/lib/utils";
@@ -255,7 +256,7 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
       }
       if (mode !== "live") return;
       if (!settings.sheetId) throw new Error("Set your Google Sheet ID in Settings, then refresh.");
-      const token = getStoredToken();
+      const token = await sheetsAccessToken(controller.signal);
       if (!token) throw new AuthError("Google Sheets access needs to be renewed on this device.");
       const tabs = Object.entries(settings.txTabs);
       const symbolFor = (t: Transaction) =>
@@ -333,7 +334,9 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
       if (id !== loadId.current) return;
       if (e instanceof AuthError) {
         clearSheetsToken();
-        setError("Google Sheets access expired or this account cannot open the sheet. Tap Refresh to reconnect.");
+        setError(sheetsConnectionEnabled
+          ? "Open Settings to reconnect Google Sheets, or check that your Google account can open the sheet."
+          : "Google Sheets access expired or this account cannot open the sheet. Tap Refresh to reconnect.");
       } else setError(controller.signal.aborted ? "Loading your sheet timed out. Please try Refresh again." : e instanceof Error ? e.message : String(e));
     } finally {
       clearTimeout(timeout);
@@ -362,6 +365,24 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
     if (refreshActive.current) return;
     if (mode !== "live") { await load(); return; }
     let token = getStoredToken();
+    if (!token && sheetsConnectionEnabled) {
+      refreshActive.current = true;
+      setRefreshStatus("Checking your Google Sheets connection…");
+      setError("");
+      try {
+        token = await sheetsAccessToken();
+        if (!token) {
+          setError("Open Settings and choose Connect Google Sheets to restore access on this device.");
+          return;
+        }
+      } catch (error) {
+        setError(error instanceof Error ? error.message : "Could not reconnect Google Sheets.");
+        return;
+      } finally {
+        refreshActive.current = false;
+        setRefreshStatus("");
+      }
+    }
     if (!token) {
       refreshActive.current = true;
       try {

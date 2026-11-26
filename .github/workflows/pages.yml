@@ -39,6 +39,7 @@ jobs:
           NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ${{ vars.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET }}
           NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID }}
           NEXT_PUBLIC_FIREBASE_APP_ID: ${{ vars.NEXT_PUBLIC_FIREBASE_APP_ID }}
+          NEXT_PUBLIC_SHEETS_AUTH_URL: ${{ vars.NEXT_PUBLIC_SHEETS_AUTH_URL }}
       - uses: actions/upload-pages-artifact@v4
         with:
           name: github-pages-${{ github.run_attempt }}

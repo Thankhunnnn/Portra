@@ -9,6 +9,7 @@ import { NAV_MAIN, NAV_TOOLS, NAV_MANAGE } from "@/components/shell/ui-context";
 import { BENCHMARKS } from "@/lib/benchmarks";
 import { COST_METHODS } from "@/lib/lots";
 import { DEFAULT_SETTINGS, type Settings } from "@/lib/sheets";
+import { connectSheetsInGoogle, disconnectSheetsFromGoogle, sheetsConnectionEnabled } from "@/lib/sheetsConnection";
 
 const inputCls = "num mt-1 h-9 w-full rounded-lg border border-line bg-header px-3 text-sm outline-none focus:border-brand";
 
@@ -24,6 +25,8 @@ export default function SettingsPage() {
   const [saved, setSaved] = useState(false);
   const [rows, setRows] = useState(() => portfolioRows(settings));
   const [error, setError] = useState("");
+  const [connectionBusy, setConnectionBusy] = useState(false);
+  const [connectionError, setConnectionError] = useState("");
   const [calculation, setCalculation] = useState<{ costMethod: Settings["costMethod"]; separateCash: boolean }>();
   const reports = [...NAV_MAIN, ...NAV_TOOLS, ...NAV_MANAGE].filter((item) => !["/settings", "/rebalance"].includes(item.href));
   useEffect(() => {
@@ -58,6 +61,22 @@ export default function SettingsPage() {
     setSaved(true);
   }
 
+  async function changeSheetsConnection(connect: boolean) {
+    setConnectionBusy(true);
+    setConnectionError("");
+    try {
+      if (connect) await connectSheetsInGoogle();
+      else {
+        await disconnectSheetsFromGoogle();
+        setConnectionError("Automatic Google Sheets access has been disconnected.");
+      }
+    } catch (failure) {
+      setConnectionError(failure instanceof Error ? failure.message : "Could not change Google Sheets access.");
+    } finally {
+      setConnectionBusy(false);
+    }
+  }
+
   const field = (label: string, value: string, on: (v: string) => void, hint?: string, type = "text") => (
     <label className="block text-sm text-sub">
       {label}
@@ -69,6 +88,15 @@ export default function SettingsPage() {
     <div className="max-w-5xl space-y-5">
       <h1 className="text-xl font-normal">Settings</h1>
       {mode === "live" && <p role="status" className="text-xs text-sub">{settingsSync === "synced" ? "Sheet settings sync with your Google account. Refresh credentials stay in this browser." : settingsSync === "loading" ? "Checking for saved sheet settings…" : "Sheet settings are saved on this device. Account sync is unavailable right now."}</p>}
+      {mode === "live" && sheetsConnectionEnabled && <section className="space-y-2 rounded-2xl border border-line bg-card p-4">
+        <h2 className="font-semibold">Automatic Google Sheets access</h2>
+        <p className="text-sm text-sub">Connect once to let Portra renew read-only access on devices signed in to this account.</p>
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" disabled={connectionBusy} onClick={() => void changeSheetsConnection(true)}>Connect Google Sheets</Button>
+          <Button type="button" variant="ghost" disabled={connectionBusy} onClick={() => void changeSheetsConnection(false)}>Disconnect</Button>
+        </div>
+        {connectionError && <p role="status" className="text-sm text-sub">{connectionError}</p>}
+      </section>}
       <section className="rounded-2xl border border-line bg-card p-4">
         <h2 className="font-semibold">Account settings</h2>
         <div className="mt-3 grid gap-3 sm:grid-cols-3">

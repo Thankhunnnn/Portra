@@ -36,6 +36,10 @@ export function getStoredToken(): string | null {
   }
 }
 
+export function storeSheetsToken(token: string, expiresIn: number) {
+  sessionStorage.setItem(TOKEN_KEY, JSON.stringify({ token, exp: Date.now() + Math.max(0, expiresIn - 60) * 1000 }));
+}
+
 /** Google Sign-In with the read-only Sheets scope. The OAuth access token lasts ~1h. */
 export async function signInWithGoogle(): Promise<string> {
   const provider = new GoogleAuthProvider();
@@ -45,7 +49,7 @@ export async function signInWithGoogle(): Promise<string> {
   const cred = GoogleAuthProvider.credentialFromResult(result);
   const token = cred?.accessToken;
   if (!token) throw new Error("Google did not return an access token");
-  sessionStorage.setItem(TOKEN_KEY, JSON.stringify({ token, exp: Date.now() + 55 * 60_000 }));
+  storeSheetsToken(token, 56 * 60);
   return token;
 }
 
